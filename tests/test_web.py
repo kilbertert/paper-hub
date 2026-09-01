@@ -103,6 +103,9 @@ def test_homepage_contains_filters_and_security_headers() -> None:
     assert "Europe PMC" in response.text
     assert 'id="only-oa"' in response.text
     assert "fetch('/api/search?" in response.text
+    assert "show-favorites" in response.text
+    assert "'/api/' + kind" in response.text
+    assert "'/favorite'" in response.text
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
     assert response.headers["x-content-type-options"] == "nosniff"
 

@@ -180,7 +180,7 @@ def create_app(
 <p class="meta">来源：{escape(item.primary_badge)} · 年份：{record.publication_year or "未知"}</p>
 <p class="meta">DOI：{doi_link}</p><h2>摘要</h2><p>{abstract}</p>
 <h2>知识点</h2><p class="placeholder">知识点整理将在后续版本提供；当前仅展示来源摘要。</p>
-<p><button type="button" disabled>下载</button><button type="button" disabled>收藏</button></p>
+<p><a href="/api/papers/{quote(record.canonical_key, safe="")}/download">下载</a> · <a href="/">返回首页收藏</a></p>
 </main></body></html>"""
         return HTMLResponse(html)
 
