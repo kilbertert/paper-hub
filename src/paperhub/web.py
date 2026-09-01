@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from collections.abc import Iterable
 from html import escape
 from pathlib import Path
@@ -28,6 +29,7 @@ from .downloads import FullTextDownloader, ObjectStore
 from .http import HttpClient
 from .merge import MergedPaper, merge_records
 from .sources import SourceName
+from .storage import Library
 from .unpaywall import UnpaywallClient, fallback_candidates
 
 
@@ -63,16 +65,20 @@ def create_app(
     *,
     http: HttpClient | None = None,
     object_store: ObjectStore | None = None,
+    library: Library | None = None,
 ) -> FastAPI:
     app = FastAPI(title="paper-hub", version="0.1.0")
     http_client = http or HttpClient(user_agent="paper-hub/0.1")
     configured = tuple(default_connectors(http_client) if connectors is None else connectors)
     paper_index: dict[str, MergedPaper] = {}
     downloader = FullTextDownloader(http_client, object_store or ObjectStore(Path("var/objects")))
+    library = library or Library(Path("var/paperhub.sqlite"))
     unpaywall = UnpaywallClient(http_client, email=os.getenv("PAPERHUB_UNPAYWALL_EMAIL"))
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
+        session_id = request.cookies.get("paperhub_session") or secrets.token_urlsafe(18)
+        request.state.session_id = session_id
         response = await call_next(request)
         response.headers.setdefault(
             "Content-Security-Policy",
@@ -81,6 +87,8 @@ def create_app(
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("X-Frame-Options", "DENY")
+        if not request.cookies.get("paperhub_session"):
+            response.set_cookie("paperhub_session", session_id, httponly=True, samesite="lax")
         return response
 
     @app.get("/", response_class=HTMLResponse)
@@ -88,7 +96,7 @@ def create_app(
         html = (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
         return HTMLResponse(html)
 
-    def run_search(request: SearchRequest) -> dict[str, object]:
+    def run_search(request: SearchRequest, session_id: str) -> dict[str, object]:
         keywords = request.keywords
         sources = request.sources
         year_from = request.year_from
@@ -116,6 +124,7 @@ def create_app(
         results = merge_records(filtered_records)
         indexed = {item.record.canonical_key: item for item in results}
         paper_index.update(indexed)
+        library.save_papers(session_id, results)
         return {
             "query": keywords.strip(),
             "sources": [c.source.value for c in selected],
@@ -125,6 +134,7 @@ def create_app(
 
     @app.get("/api/search")
     def search(
+        request: Request,
         keywords: Annotated[str, Query(min_length=1, max_length=300)],
         sources: Annotated[list[SourceName] | None, Query()] = None,
         year_from: Annotated[int | None, Query(ge=1000, le=3000)] = None,
@@ -140,12 +150,13 @@ def create_app(
                 year_to=year_to,
                 only_oa=only_oa,
                 limit=limit,
-            )
+            ),
+            request.state.session_id,
         )
 
     @app.post("/api/search")
-    def search_post(request: SearchRequest) -> dict[str, object]:
-        return run_search(request)
+    def search_post(body: SearchRequest, request: Request) -> dict[str, object]:
+        return run_search(body, request.state.session_id)
 
     @app.get("/papers/{canonical_key:path}", response_class=HTMLResponse)
     def paper_detail(canonical_key: str) -> HTMLResponse:
@@ -174,7 +185,7 @@ def create_app(
         return HTMLResponse(html)
 
     @app.get("/api/papers/{canonical_key:path}/download")
-    def download(canonical_key: str):
+    def download(canonical_key: str, request: Request):
         item = paper_index.get(canonical_key)
         if item is None:
             return JSONResponse({"status": "not_found"}, status_code=404)
@@ -187,6 +198,7 @@ def create_app(
         for candidate in candidates:
             try:
                 cached = downloader.acquire(candidate)
+                library.record_download(request.state.session_id, canonical_key, cached.path)
                 return FileResponse(
                     cached.path, media_type=cached.media_type, filename=cached.path.name
                 )
@@ -195,6 +207,30 @@ def create_app(
         return JSONResponse(
             {"status": "not_downloadable", "detail": str(last_error)}, status_code=403
         )
+
+    @app.post("/api/papers/{canonical_key:path}/favorite")
+    def favorite(canonical_key: str, request: Request) -> dict[str, object]:
+        session_id = request.state.session_id
+        if (
+            canonical_key not in paper_index
+            and library.get_paper(session_id, canonical_key) is None
+        ):
+            return {"status": "not_found", "favorite": False}
+        library.set_favorite(session_id, canonical_key, True)
+        return {"status": "ok", "favorite": True, "canonical_key": canonical_key}
+
+    @app.delete("/api/papers/{canonical_key:path}/favorite")
+    def unfavorite(canonical_key: str, request: Request) -> dict[str, object]:
+        library.set_favorite(request.state.session_id, canonical_key, False)
+        return {"status": "ok", "favorite": False, "canonical_key": canonical_key}
+
+    @app.get("/api/favorites")
+    def favorites(request: Request) -> dict[str, object]:
+        return {"results": library.list_papers(request.state.session_id, "favorites")}
+
+    @app.get("/api/downloads")
+    def downloads(request: Request) -> dict[str, object]:
+        return {"results": library.list_papers(request.state.session_id, "downloads")}
 
     return app
 
