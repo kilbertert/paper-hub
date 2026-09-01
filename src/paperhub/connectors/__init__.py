@@ -1,0 +1,5 @@
+"""来源连接器包. T01 只有抽象 seam 与占位 stub; 真实六源在 T02 落地."""
+
+from .base import LiteratureConnector, StubConnector
+
+__all__ = ["LiteratureConnector", "StubConnector"]
