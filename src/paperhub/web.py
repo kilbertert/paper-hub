@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from collections.abc import Iterable
@@ -28,6 +29,7 @@ from .connectors import (
 from .downloads import FullTextDownloader, ObjectStore
 from .http import HttpClient
 from .merge import MergedPaper, merge_records
+from .models import paper_record_from_dict
 from .sources import SourceName
 from .storage import Library
 from .unpaywall import UnpaywallClient, fallback_candidates
@@ -51,6 +53,7 @@ class SearchRequest(BaseModel):
     year_to: int | None = Field(default=None, ge=1000, le=3000)
     only_oa: bool = False
     limit: int = Field(default=25, ge=1, le=100)
+    refresh: bool = False
 
     @field_validator("keywords")
     @classmethod
@@ -72,8 +75,25 @@ def create_app(
     configured = tuple(default_connectors(http_client) if connectors is None else connectors)
     paper_index: dict[str, MergedPaper] = {}
     downloader = FullTextDownloader(http_client, object_store or ObjectStore(Path("var/objects")))
-    library = library or Library(Path("var/paperhub.sqlite"))
+    library = library or Library(
+        Path(":memory:" if connectors is not None else "var/paperhub.sqlite")
+    )
     unpaywall = UnpaywallClient(http_client, email=os.getenv("PAPERHUB_UNPAYWALL_EMAIL"))
+
+    def get_item(canonical_key: str, session_id: str) -> MergedPaper | None:
+        item = paper_index.get(canonical_key)
+        if item is not None:
+            return item
+        payload = library.get_paper(session_id, canonical_key)
+        if not payload:
+            return None
+        restored = paper_record_from_dict(payload)
+        sources = tuple(
+            SourceName(value) for value in payload.get("sources", [restored.source.value])
+        )
+        item = MergedPaper(restored, sources)
+        paper_index[canonical_key] = item
+        return item
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -103,8 +123,24 @@ def create_app(
         year_to = request.year_to
         only_oa = request.only_oa
         limit = request.limit
+        cache_key = json.dumps(
+            {
+                "keywords": keywords.strip(),
+                "sources": sorted(source.value for source in sources or []),
+                "year_from": year_from,
+                "year_to": year_to,
+                "only_oa": only_oa,
+                "limit": limit,
+            },
+            sort_keys=True,
+        )
         if year_from is not None and year_to is not None and year_from > year_to:
             return {"error": "year_from must be less than or equal to year_to", "results": []}
+        if not request.refresh:
+            cached = library.get_cached_search(cache_key)
+            if cached is not None:
+                library.save_payloads(session_id, cached.get("results", []))
+                return cached
         selected = tuple(c for c in configured if not sources or c.source in sources)
         pages = search_connectors(selected, keywords.strip(), limit=limit)
         filtered_records = (
@@ -125,12 +161,14 @@ def create_app(
         indexed = {item.record.canonical_key: item for item in results}
         paper_index.update(indexed)
         library.save_papers(session_id, results)
-        return {
+        payload = {
             "query": keywords.strip(),
             "sources": [c.source.value for c in selected],
             "count": len(results),
             "results": [item.to_dict() for item in results],
         }
+        library.put_cached_search(cache_key, payload)
+        return payload
 
     @app.get("/api/search")
     def search(
@@ -141,6 +179,7 @@ def create_app(
         year_to: Annotated[int | None, Query(ge=1000, le=3000)] = None,
         only_oa: bool = False,
         limit: Annotated[int, Query(ge=1, le=100)] = 25,
+        refresh: bool = False,
     ) -> dict[str, object]:
         return run_search(
             SearchRequest(
@@ -150,6 +189,7 @@ def create_app(
                 year_to=year_to,
                 only_oa=only_oa,
                 limit=limit,
+                refresh=refresh,
             ),
             request.state.session_id,
         )
@@ -159,8 +199,8 @@ def create_app(
         return run_search(body, request.state.session_id)
 
     @app.get("/papers/{canonical_key:path}", response_class=HTMLResponse)
-    def paper_detail(canonical_key: str) -> HTMLResponse:
-        item = paper_index.get(canonical_key)
+    def paper_detail(canonical_key: str, request: Request) -> HTMLResponse:
+        item = get_item(canonical_key, request.state.session_id)
         if item is None:
             return HTMLResponse("<h1>论文不存在</h1>", status_code=404)
         record = item.record
@@ -186,7 +226,7 @@ def create_app(
 
     @app.get("/api/papers/{canonical_key:path}/download")
     def download(canonical_key: str, request: Request):
-        item = paper_index.get(canonical_key)
+        item = get_item(canonical_key, request.state.session_id)
         if item is None:
             return JSONResponse({"status": "not_found"}, status_code=404)
         candidates = fallback_candidates(item.record, unpaywall)
@@ -211,10 +251,7 @@ def create_app(
     @app.post("/api/papers/{canonical_key:path}/favorite")
     def favorite(canonical_key: str, request: Request) -> dict[str, object]:
         session_id = request.state.session_id
-        if (
-            canonical_key not in paper_index
-            and library.get_paper(session_id, canonical_key) is None
-        ):
+        if get_item(canonical_key, session_id) is None:
             return {"status": "not_found", "favorite": False}
         library.set_favorite(session_id, canonical_key, True)
         return {"status": "ok", "favorite": True, "canonical_key": canonical_key}

@@ -158,3 +158,36 @@ class SearchPage:
 def canonical_key(record: PaperRecord) -> str:
     """模块级便捷入口, 返回记录的跨源合并键."""
     return record.canonical_key
+
+
+def paper_record_from_dict(data: dict[str, Any]) -> PaperRecord:
+    """Restore a stored result snapshot without retaining raw API payloads."""
+    candidates = tuple(
+        FullTextCandidate(
+            source=SourceName(item["source"]),
+            source_id=item["source_id"],
+            url=item["url"],
+            format=FullTextFormat(item["format"]),
+            access=SourceAccess(item["access"]),
+            rights_status=RightsStatus(item.get("rights_status", RightsStatus.UNKNOWN.value)),
+            media_type=item.get("media_type"),
+        )
+        for item in data.get("full_text_candidates", [])
+    )
+    return PaperRecord(
+        source=SourceName(data["source"]),
+        source_id=data["source_id"],
+        title=data["title"],
+        abstract=data.get("abstract"),
+        doi=data.get("doi"),
+        pmid=data.get("pmid"),
+        pmcid=data.get("pmcid"),
+        journal=data.get("journal"),
+        issns=tuple(data.get("issns", [])),
+        publication_year=data.get("publication_year"),
+        authors=tuple(data.get("authors", [])),
+        publication_types=tuple(data.get("publication_types", [])),
+        keywords=tuple(data.get("keywords", [])),
+        is_open_access=data.get("is_open_access"),
+        full_text_candidates=candidates,
+    )

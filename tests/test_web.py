@@ -165,6 +165,7 @@ def test_download_endpoint_delivers_approved_asset(tmp_path: Path) -> None:
             [_Fake(SourceName.EUROPE_PMC, (record,))],
             http=http,
             object_store=ObjectStore(tmp_path / "objects"),
+            library=Library(tmp_path / "library.sqlite"),
         )
     )
     key = client.get("/api/search", params={"keywords": "nutrition"}).json()["results"][0][
@@ -191,3 +192,59 @@ def test_favorite_and_download_lists_are_session_scoped(tmp_path: Path) -> None:
     assert TestClient(app).get("/api/favorites").json()["results"] == []
     assert client.delete(f"/api/papers/{key}/favorite").json()["favorite"] is False
     assert client.get("/api/favorites").json()["results"] == []
+
+
+def test_search_cache_skips_connector_until_refresh(tmp_path: Path) -> None:
+    class CountingFake(_Fake):
+        calls = 0
+
+        def search(self, query: str, *, limit: int = 25, cursor: str | None = None) -> SearchPage:
+            self.calls += 1
+            return super().search(query, limit=limit, cursor=cursor)
+
+    fake = CountingFake(SourceName.CROSSREF, ())
+    client = TestClient(create_app([fake], library=Library(tmp_path / "cache.sqlite")))
+    params = {"keywords": "nutrition", "sources": ["crossref"]}
+    client.get("/api/search", params=params)
+    client.get("/api/search", params=params)
+    client.get("/api/search", params={**params, "refresh": "true"})
+    assert fake.calls == 2
+
+
+def test_search_cache_ttl_expiry_triggers_new_search(tmp_path: Path) -> None:
+    class CountingFake(_Fake):
+        calls = 0
+
+        def search(self, query: str, *, limit: int = 25, cursor: str | None = None) -> SearchPage:
+            self.calls += 1
+            return super().search(query, limit=limit, cursor=cursor)
+
+    library = Library(tmp_path / "cache.sqlite")
+    fake = CountingFake(SourceName.CROSSREF, ())
+    client = TestClient(create_app([fake], library=library))
+    params = {"keywords": "nutrition", "sources": ["crossref"]}
+    client.get("/api/search", params=params)
+    library._db.execute("UPDATE search_cache SET created_at=0")
+    library._db.commit()
+    client.get("/api/search", params=params)
+    assert fake.calls == 2
+
+
+def test_cached_snapshot_can_render_in_a_new_app_instance(tmp_path: Path) -> None:
+    record = PaperRecord(
+        source=SourceName.CROSSREF,
+        source_id="x",
+        title="Persisted detail",
+        abstract="Stored abstract",
+        doi="10.1/persisted",
+        publication_year=2024,
+    )
+    library = Library(tmp_path / "persistent.sqlite")
+    first = TestClient(create_app([_Fake(SourceName.CROSSREF, (record,))], library=library))
+    key = first.get("/api/search", params={"keywords": "nutrition"}).json()["results"][0][
+        "canonical_key"
+    ]
+    second = TestClient(create_app([_Fake(SourceName.CROSSREF, ())], library=library))
+    cached = second.get("/api/search", params={"keywords": "nutrition"})
+    assert cached.json()["count"] == 1
+    assert second.get(f"/papers/{key}").status_code == 200

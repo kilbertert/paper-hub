@@ -9,6 +9,7 @@ from .models import (
     SourceName,
     canonical_key,
     normalize_doi,
+    paper_record_from_dict,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "canonical_key",
     "merge_records",
     "normalize_doi",
+    "paper_record_from_dict",
 ]
