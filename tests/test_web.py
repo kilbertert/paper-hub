@@ -99,3 +99,26 @@ def test_homepage_contains_filters_and_security_headers() -> None:
     assert "fetch('/api/search?" in response.text
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
     assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_detail_page_renders_escaped_abstract_and_doi_link_after_search() -> None:
+    record = PaperRecord(
+        source=SourceName.CROSSREF,
+        source_id="x",
+        title="A <paper>",
+        abstract="<script>alert(1)</script>",
+        doi="10.1/detail",
+        publication_year=2024,
+    )
+    client = TestClient(create_app([_Fake(SourceName.CROSSREF, (record,))]))
+    search = client.get("/api/search", params={"keywords": "nutrition"})
+    key = search.json()["results"][0]["canonical_key"]
+    response = client.get(f"/papers/{key}")
+    assert response.status_code == 200
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
+    assert "https://doi.org/10.1/detail" in response.text
+    assert "知识点" in response.text
+
+
+def test_detail_page_returns_404_for_unknown_key() -> None:
+    assert TestClient(create_app([])).get("/papers/doi%3Amissing").status_code == 404
