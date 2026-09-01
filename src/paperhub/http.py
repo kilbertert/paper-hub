@@ -68,12 +68,13 @@ class HttpClient:
         url: str,
         *,
         max_bytes: int,
+        params: dict[str, object] | None = None,
         headers: dict[str, str] | None = None,
     ) -> DownloadedResponse:
         """GET 并返回原始字节, 限制最大大小."""
         headers = {"User-Agent": self.user_agent, **(headers or {})}
         self.rate_limiter.wait(url)
-        response = self._client.get(url, headers=headers)
+        response = self._client.get(url, params=params, headers=headers)
         response.raise_for_status()
         content = response.content
         if len(content) > max_bytes:
