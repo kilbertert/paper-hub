@@ -8,6 +8,7 @@ from paperhub.downloads import ObjectStore
 from paperhub.http import HostRateLimiter, HttpClient
 from paperhub.models import FullTextCandidate, PaperRecord, SearchPage
 from paperhub.sources import FullTextFormat, SourceAccess, SourceName
+from paperhub.storage import Library
 from paperhub.web import create_app
 
 
@@ -102,6 +103,9 @@ def test_homepage_contains_filters_and_security_headers() -> None:
     assert "Europe PMC" in response.text
     assert 'id="only-oa"' in response.text
     assert "fetch('/api/search?" in response.text
+    assert "show-favorites" in response.text
+    assert "'/api/' + kind" in response.text
+    assert "'/favorite'" in response.text
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
     assert response.headers["x-content-type-options"] == "nosniff"
 
@@ -169,3 +173,21 @@ def test_download_endpoint_delivers_approved_asset(tmp_path: Path) -> None:
     response = client.get(f"/api/papers/{key}/download")
     assert response.status_code == 200
     assert response.content.startswith(b"%PDF-")
+    assert client.get("/api/downloads").json()["results"][0]["canonical_key"] == key
+
+
+def test_favorite_and_download_lists_are_session_scoped(tmp_path: Path) -> None:
+    record = PaperRecord(source=SourceName.CROSSREF, source_id="x", title="Saved", doi="10.1/saved")
+    app = create_app(
+        [_Fake(SourceName.CROSSREF, (record,))],
+        library=Library(tmp_path / "library.sqlite"),
+    )
+    client = TestClient(app)
+    key = client.get("/api/search", params={"keywords": "nutrition"}).json()["results"][0][
+        "canonical_key"
+    ]
+    assert client.post(f"/api/papers/{key}/favorite").json()["favorite"] is True
+    assert client.get("/api/favorites").json()["results"][0]["canonical_key"] == key
+    assert TestClient(app).get("/api/favorites").json()["results"] == []
+    assert client.delete(f"/api/papers/{key}/favorite").json()["favorite"] is False
+    assert client.get("/api/favorites").json()["results"] == []
