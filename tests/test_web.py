@@ -228,3 +228,23 @@ def test_search_cache_ttl_expiry_triggers_new_search(tmp_path: Path) -> None:
     library._db.commit()
     client.get("/api/search", params=params)
     assert fake.calls == 2
+
+
+def test_cached_snapshot_can_render_in_a_new_app_instance(tmp_path: Path) -> None:
+    record = PaperRecord(
+        source=SourceName.CROSSREF,
+        source_id="x",
+        title="Persisted detail",
+        abstract="Stored abstract",
+        doi="10.1/persisted",
+        publication_year=2024,
+    )
+    library = Library(tmp_path / "persistent.sqlite")
+    first = TestClient(create_app([_Fake(SourceName.CROSSREF, (record,))], library=library))
+    key = first.get("/api/search", params={"keywords": "nutrition"}).json()["results"][0][
+        "canonical_key"
+    ]
+    second = TestClient(create_app([_Fake(SourceName.CROSSREF, ())], library=library))
+    cached = second.get("/api/search", params={"keywords": "nutrition"})
+    assert cached.json()["count"] == 1
+    assert second.get(f"/papers/{key}").status_code == 200

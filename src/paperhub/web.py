@@ -29,6 +29,7 @@ from .connectors import (
 from .downloads import FullTextDownloader, ObjectStore
 from .http import HttpClient
 from .merge import MergedPaper, merge_records
+from .models import paper_record_from_dict
 from .sources import SourceName
 from .storage import Library
 from .unpaywall import UnpaywallClient, fallback_candidates
@@ -78,6 +79,21 @@ def create_app(
         Path(":memory:" if connectors is not None else "var/paperhub.sqlite")
     )
     unpaywall = UnpaywallClient(http_client, email=os.getenv("PAPERHUB_UNPAYWALL_EMAIL"))
+
+    def get_item(canonical_key: str, session_id: str) -> MergedPaper | None:
+        item = paper_index.get(canonical_key)
+        if item is not None:
+            return item
+        payload = library.get_paper(session_id, canonical_key)
+        if not payload:
+            return None
+        restored = paper_record_from_dict(payload)
+        sources = tuple(
+            SourceName(value) for value in payload.get("sources", [restored.source.value])
+        )
+        item = MergedPaper(restored, sources)
+        paper_index[canonical_key] = item
+        return item
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -183,8 +199,8 @@ def create_app(
         return run_search(body, request.state.session_id)
 
     @app.get("/papers/{canonical_key:path}", response_class=HTMLResponse)
-    def paper_detail(canonical_key: str) -> HTMLResponse:
-        item = paper_index.get(canonical_key)
+    def paper_detail(canonical_key: str, request: Request) -> HTMLResponse:
+        item = get_item(canonical_key, request.state.session_id)
         if item is None:
             return HTMLResponse("<h1>论文不存在</h1>", status_code=404)
         record = item.record
@@ -210,7 +226,7 @@ def create_app(
 
     @app.get("/api/papers/{canonical_key:path}/download")
     def download(canonical_key: str, request: Request):
-        item = paper_index.get(canonical_key)
+        item = get_item(canonical_key, request.state.session_id)
         if item is None:
             return JSONResponse({"status": "not_found"}, status_code=404)
         candidates = fallback_candidates(item.record, unpaywall)
@@ -235,10 +251,7 @@ def create_app(
     @app.post("/api/papers/{canonical_key:path}/favorite")
     def favorite(canonical_key: str, request: Request) -> dict[str, object]:
         session_id = request.state.session_id
-        if (
-            canonical_key not in paper_index
-            and library.get_paper(session_id, canonical_key) is None
-        ):
+        if get_item(canonical_key, session_id) is None:
             return {"status": "not_found", "favorite": False}
         library.set_favorite(session_id, canonical_key, True)
         return {"status": "ok", "favorite": True, "canonical_key": canonical_key}
