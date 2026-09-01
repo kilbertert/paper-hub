@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, field_validator
 
 from .connectors import (
@@ -59,6 +61,23 @@ def create_app(
         if connectors is None
         else connectors
     )
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+        )
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        return response
+
+    @app.get("/", response_class=HTMLResponse)
+    def index() -> HTMLResponse:
+        html = (Path(__file__).parent / "web" / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(html)
 
     def run_search(request: SearchRequest) -> dict[str, object]:
         keywords = request.keywords

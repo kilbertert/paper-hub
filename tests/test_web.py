@@ -89,3 +89,13 @@ def test_year_filter_excludes_records_without_a_year() -> None:
         "/api/search", params={"keywords": "nutrition", "year_from": 2020}
     )
     assert response.json()["count"] == 0
+
+
+def test_homepage_contains_filters_and_security_headers() -> None:
+    response = TestClient(create_app([])).get("/")
+    assert response.status_code == 200
+    assert "Europe PMC" in response.text
+    assert 'id="only-oa"' in response.text
+    assert "fetch('/api/search?" in response.text
+    assert response.headers["content-security-policy"].startswith("default-src 'self'")
+    assert response.headers["x-content-type-options"] == "nosniff"
