@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +34,9 @@ class Library:
                     session_id TEXT NOT NULL, canonical_key TEXT NOT NULL,
                     object_path TEXT NOT NULL, created_at TEXT NOT NULL,
                     PRIMARY KEY (session_id, canonical_key)
+                );
+                CREATE TABLE IF NOT EXISTS search_cache (
+                    cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL
                 );"""
             )
 
@@ -41,6 +45,15 @@ class Library:
             (session_id, paper.record.canonical_key, json.dumps(paper.to_dict()))
             for paper in papers
         ]
+        with self._lock, self._db:
+            self._db.executemany(
+                "INSERT INTO papers(session_id, canonical_key, payload) VALUES (?, ?, ?) "
+                "ON CONFLICT(session_id, canonical_key) DO UPDATE SET payload=excluded.payload",
+                rows,
+            )
+
+    def save_payloads(self, session_id: str, payloads: Iterable[dict]) -> None:
+        rows = [(session_id, payload["canonical_key"], json.dumps(payload)) for payload in payloads]
         with self._lock, self._db:
             self._db.executemany(
                 "INSERT INTO papers(session_id, canonical_key, payload) VALUES (?, ?, ?) "
@@ -92,4 +105,21 @@ class Library:
                 "INSERT INTO downloads VALUES (?, ?, ?, ?) ON CONFLICT(session_id, canonical_key) "
                 "DO UPDATE SET object_path=excluded.object_path, created_at=excluded.created_at",
                 (session_id, canonical_key, str(object_path), datetime.now(UTC).isoformat()),
+            )
+
+    def get_cached_search(self, cache_key: str, *, ttl: float = 7 * 86400) -> dict | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT payload, created_at FROM search_cache WHERE cache_key=?", (cache_key,)
+            ).fetchone()
+        if not row or time.time() - row["created_at"] >= ttl:
+            return None
+        return json.loads(row["payload"])
+
+    def put_cached_search(self, cache_key: str, payload: dict) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO search_cache(cache_key, payload, created_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload, created_at=excluded.created_at",
+                (cache_key, json.dumps(payload), time.time()),
             )

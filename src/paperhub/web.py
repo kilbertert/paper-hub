@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from collections.abc import Iterable
@@ -51,6 +52,7 @@ class SearchRequest(BaseModel):
     year_to: int | None = Field(default=None, ge=1000, le=3000)
     only_oa: bool = False
     limit: int = Field(default=25, ge=1, le=100)
+    refresh: bool = False
 
     @field_validator("keywords")
     @classmethod
@@ -72,7 +74,9 @@ def create_app(
     configured = tuple(default_connectors(http_client) if connectors is None else connectors)
     paper_index: dict[str, MergedPaper] = {}
     downloader = FullTextDownloader(http_client, object_store or ObjectStore(Path("var/objects")))
-    library = library or Library(Path("var/paperhub.sqlite"))
+    library = library or Library(
+        Path(":memory:" if connectors is not None else "var/paperhub.sqlite")
+    )
     unpaywall = UnpaywallClient(http_client, email=os.getenv("PAPERHUB_UNPAYWALL_EMAIL"))
 
     @app.middleware("http")
@@ -103,8 +107,24 @@ def create_app(
         year_to = request.year_to
         only_oa = request.only_oa
         limit = request.limit
+        cache_key = json.dumps(
+            {
+                "keywords": keywords.strip(),
+                "sources": sorted(source.value for source in sources or []),
+                "year_from": year_from,
+                "year_to": year_to,
+                "only_oa": only_oa,
+                "limit": limit,
+            },
+            sort_keys=True,
+        )
         if year_from is not None and year_to is not None and year_from > year_to:
             return {"error": "year_from must be less than or equal to year_to", "results": []}
+        if not request.refresh:
+            cached = library.get_cached_search(cache_key)
+            if cached is not None:
+                library.save_payloads(session_id, cached.get("results", []))
+                return cached
         selected = tuple(c for c in configured if not sources or c.source in sources)
         pages = search_connectors(selected, keywords.strip(), limit=limit)
         filtered_records = (
@@ -125,12 +145,14 @@ def create_app(
         indexed = {item.record.canonical_key: item for item in results}
         paper_index.update(indexed)
         library.save_papers(session_id, results)
-        return {
+        payload = {
             "query": keywords.strip(),
             "sources": [c.source.value for c in selected],
             "count": len(results),
             "results": [item.to_dict() for item in results],
         }
+        library.put_cached_search(cache_key, payload)
+        return payload
 
     @app.get("/api/search")
     def search(
@@ -141,6 +163,7 @@ def create_app(
         year_to: Annotated[int | None, Query(ge=1000, le=3000)] = None,
         only_oa: bool = False,
         limit: Annotated[int, Query(ge=1, le=100)] = 25,
+        refresh: bool = False,
     ) -> dict[str, object]:
         return run_search(
             SearchRequest(
@@ -150,6 +173,7 @@ def create_app(
                 year_to=year_to,
                 only_oa=only_oa,
                 limit=limit,
+                refresh=refresh,
             ),
             request.state.session_id,
         )
