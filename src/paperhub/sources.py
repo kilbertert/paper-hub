@@ -14,6 +14,7 @@ class SourceName(StrEnum):
     OPENALEX = "openalex"
     CROSSREF = "crossref"
     PUBMED = "pubmed"
+    UNPAYWALL = "unpaywall"
 
 
 class SourceAccess(StrEnum):
