@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from threading import Lock
 from urllib.parse import urlparse
 
 import httpx
@@ -15,15 +16,20 @@ class HostRateLimiter:
 
     intervals: dict[str, float] = field(default_factory=dict)
     _last_call: dict[str, float] = field(default_factory=dict)
+    _host_locks: dict[str, Lock] = field(default_factory=dict, repr=False)
+    _lock: Lock = field(default_factory=Lock, repr=False)
 
     def wait(self, url: str) -> None:
         host = (urlparse(url).hostname or "unknown").casefold()
-        interval = self.intervals.get(host, 0.0)
-        last = self._last_call.get(host, 0.0)
-        wait = interval - (time.monotonic() - last)
-        if wait > 0:
-            time.sleep(wait)
-        self._last_call[host] = time.monotonic()
+        with self._lock:
+            host_lock = self._host_locks.setdefault(host, Lock())
+        with host_lock:
+            interval = self.intervals.get(host, 0.0)
+            last = self._last_call.get(host, 0.0)
+            wait = interval - (time.monotonic() - last)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_call[host] = time.monotonic()
 
 
 @dataclass
@@ -68,12 +74,13 @@ class HttpClient:
         url: str,
         *,
         max_bytes: int,
+        params: dict[str, object] | None = None,
         headers: dict[str, str] | None = None,
     ) -> DownloadedResponse:
         """GET 并返回原始字节, 限制最大大小."""
         headers = {"User-Agent": self.user_agent, **(headers or {})}
         self.rate_limiter.wait(url)
-        response = self._client.get(url, headers=headers)
+        response = self._client.get(url, params=params, headers=headers)
         response.raise_for_status()
         content = response.content
         if len(content) > max_bytes:
