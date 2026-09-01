@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from html import escape
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
@@ -21,7 +23,7 @@ from .connectors import (
     search_connectors,
 )
 from .http import HttpClient
-from .merge import merge_records
+from .merge import MergedPaper, merge_records
 from .sources import SourceName
 
 
@@ -61,6 +63,7 @@ def create_app(
         if connectors is None
         else connectors
     )
+    paper_index: dict[str, MergedPaper] = {}
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -90,7 +93,7 @@ def create_app(
             return {"error": "year_from must be less than or equal to year_to", "results": []}
         selected = tuple(c for c in configured if not sources or c.source in sources)
         pages = search_connectors(selected, keywords.strip(), limit=limit)
-        records = (
+        filtered_records = (
             record
             for page in pages.values()
             for record in page.records
@@ -104,7 +107,9 @@ def create_app(
             )
             and (not only_oa or record.is_open_access is True)
         )
-        results = merge_records(records)
+        results = merge_records(filtered_records)
+        indexed = {item.record.canonical_key: item for item in results}
+        paper_index.update(indexed)
         return {
             "query": keywords.strip(),
             "sources": [c.source.value for c in selected],
@@ -135,6 +140,32 @@ def create_app(
     @app.post("/api/search")
     def search_post(request: SearchRequest) -> dict[str, object]:
         return run_search(request)
+
+    @app.get("/papers/{canonical_key:path}", response_class=HTMLResponse)
+    def paper_detail(canonical_key: str) -> HTMLResponse:
+        item = paper_index.get(canonical_key)
+        if item is None:
+            return HTMLResponse("<h1>论文不存在</h1>", status_code=404)
+        record = item.record
+        doi_link = (
+            f'<a href="https://doi.org/{quote(record.doi, safe="/")}" '
+            'target="_blank" rel="noopener noreferrer">'
+            f"{escape(record.doi)}</a>"
+            if record.doi
+            else "暂无 DOI"
+        )
+        abstract = escape(record.abstract or "暂无摘要")
+        html = f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{escape(record.title)} · paper-hub</title>
+<style>body{{font:16px/1.6 system-ui,sans-serif;max-width:900px;margin:auto;padding:2rem;background:#f5f7fb;color:#172033}}main{{background:#fff;padding:1.5rem;border-radius:12px}}.meta{{color:#64748b}}.placeholder{{border-left:4px solid #2563eb;padding:.6rem 1rem;background:#eff6ff}}button{{padding:.55rem .8rem;margin-right:.5rem}}</style></head>
+<body><main><p><a href="/">← 返回搜索</a></p><h1>{escape(record.title)}</h1>
+<p class="meta">来源：{escape(item.primary_badge)} · 年份：{record.publication_year or "未知"}</p>
+<p class="meta">DOI：{doi_link}</p><h2>摘要</h2><p>{abstract}</p>
+<h2>知识点</h2><p class="placeholder">知识点整理将在后续版本提供；当前仅展示来源摘要。</p>
+<p><button type="button" disabled>下载</button><button type="button" disabled>收藏</button></p>
+</main></body></html>"""
+        return HTMLResponse(html)
 
     return app
 
