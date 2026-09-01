@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from html import escape
 from pathlib import Path
@@ -27,6 +28,7 @@ from .downloads import FullTextDownloader, ObjectStore
 from .http import HttpClient
 from .merge import MergedPaper, merge_records
 from .sources import SourceName
+from .unpaywall import UnpaywallClient, fallback_candidates
 
 
 def default_connectors(http: HttpClient) -> tuple[LiteratureConnector, ...]:
@@ -67,6 +69,7 @@ def create_app(
     configured = tuple(default_connectors(http_client) if connectors is None else connectors)
     paper_index: dict[str, MergedPaper] = {}
     downloader = FullTextDownloader(http_client, object_store or ObjectStore(Path("var/objects")))
+    unpaywall = UnpaywallClient(http_client, email=os.getenv("PAPERHUB_UNPAYWALL_EMAIL"))
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -175,18 +178,23 @@ def create_app(
         item = paper_index.get(canonical_key)
         if item is None:
             return JSONResponse({"status": "not_found"}, status_code=404)
-        candidates = tuple(item.record.full_text_candidates)
+        candidates = fallback_candidates(item.record, unpaywall)
         if not candidates:
             return JSONResponse(
                 {"status": "metadata_only", "detail": "No open full-text asset"}, status_code=404
             )
-        try:
-            cached = downloader.acquire(candidates[0])
-        except (ValueError, RuntimeError, httpx.HTTPError) as error:
-            return JSONResponse(
-                {"status": "not_downloadable", "detail": str(error)}, status_code=403
-            )
-        return FileResponse(cached.path, media_type=cached.media_type, filename=cached.path.name)
+        last_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                cached = downloader.acquire(candidate)
+                return FileResponse(
+                    cached.path, media_type=cached.media_type, filename=cached.path.name
+                )
+            except (ValueError, RuntimeError, httpx.HTTPError) as error:
+                last_error = error
+        return JSONResponse(
+            {"status": "not_downloadable", "detail": str(last_error)}, status_code=403
+        )
 
     return app
 

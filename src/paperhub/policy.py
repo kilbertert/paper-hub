@@ -68,6 +68,13 @@ class SourcePolicyRegistry:
                 download_allowed=False,
                 note="PubMed is a metadata index; abstracts only.",
             ),
+            SourceName.UNPAYWALL: SourcePolicy(
+                source=SourceName.UNPAYWALL,
+                access=SourceAccess.APPROVED_OPEN,
+                search_allowed=False,
+                download_allowed=True,
+                note="Only OA locations explicitly returned by Unpaywall are eligible.",
+            ),
         }
 
     @staticmethod
