@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Annotated
 from urllib.parse import quote
 
+import httpx
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from .connectors import (
@@ -22,6 +23,7 @@ from .connectors import (
     PubmedConnector,
     search_connectors,
 )
+from .downloads import FullTextDownloader, ObjectStore
 from .http import HttpClient
 from .merge import MergedPaper, merge_records
 from .sources import SourceName
@@ -55,15 +57,16 @@ class SearchRequest(BaseModel):
 
 
 def create_app(
-    connectors: Iterable[LiteratureConnector] | None = None, *, http: HttpClient | None = None
+    connectors: Iterable[LiteratureConnector] | None = None,
+    *,
+    http: HttpClient | None = None,
+    object_store: ObjectStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="paper-hub", version="0.1.0")
-    configured = tuple(
-        default_connectors(http or HttpClient(user_agent="paper-hub/0.1"))
-        if connectors is None
-        else connectors
-    )
+    http_client = http or HttpClient(user_agent="paper-hub/0.1")
+    configured = tuple(default_connectors(http_client) if connectors is None else connectors)
     paper_index: dict[str, MergedPaper] = {}
+    downloader = FullTextDownloader(http_client, object_store or ObjectStore(Path("var/objects")))
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -166,6 +169,24 @@ def create_app(
 <p><button type="button" disabled>下载</button><button type="button" disabled>收藏</button></p>
 </main></body></html>"""
         return HTMLResponse(html)
+
+    @app.get("/api/papers/{canonical_key:path}/download")
+    def download(canonical_key: str):
+        item = paper_index.get(canonical_key)
+        if item is None:
+            return JSONResponse({"status": "not_found"}, status_code=404)
+        candidates = tuple(item.record.full_text_candidates)
+        if not candidates:
+            return JSONResponse(
+                {"status": "metadata_only", "detail": "No open full-text asset"}, status_code=404
+            )
+        try:
+            cached = downloader.acquire(candidates[0])
+        except (ValueError, RuntimeError, httpx.HTTPError) as error:
+            return JSONResponse(
+                {"status": "not_downloadable", "detail": str(error)}, status_code=403
+            )
+        return FileResponse(cached.path, media_type=cached.media_type, filename=cached.path.name)
 
     return app
 
