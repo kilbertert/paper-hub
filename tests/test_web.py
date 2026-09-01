@@ -1,8 +1,13 @@
+from pathlib import Path
+
+import httpx
 from fastapi.testclient import TestClient
 
 from paperhub.connectors import LiteratureConnector
-from paperhub.models import PaperRecord, SearchPage
-from paperhub.sources import SourceName
+from paperhub.downloads import ObjectStore
+from paperhub.http import HostRateLimiter, HttpClient
+from paperhub.models import FullTextCandidate, PaperRecord, SearchPage
+from paperhub.sources import FullTextFormat, SourceAccess, SourceName
 from paperhub.web import create_app
 
 
@@ -122,3 +127,45 @@ def test_detail_page_renders_escaped_abstract_and_doi_link_after_search() -> Non
 
 def test_detail_page_returns_404_for_unknown_key() -> None:
     assert TestClient(create_app([])).get("/papers/doi%3Amissing").status_code == 404
+
+
+def test_download_endpoint_delivers_approved_asset(tmp_path: Path) -> None:
+    candidate = FullTextCandidate(
+        source=SourceName.EUROPE_PMC,
+        source_id="PMC1",
+        url="https://example.test/fulltext",
+        format=FullTextFormat.PDF,
+        access=SourceAccess.APPROVED_OPEN,
+        media_type="application/pdf",
+    )
+    record = PaperRecord(
+        source=SourceName.EUROPE_PMC,
+        source_id="PMC1",
+        title="Downloadable",
+        doi="10.1/download",
+        full_text_candidates=(candidate,),
+    )
+    http = HttpClient(
+        user_agent="test",
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(
+                    200, content=b"%PDF-1.7\nbody", headers={"content-type": "application/pdf"}
+                )
+            )
+        ),
+        rate_limiter=HostRateLimiter({}),
+    )
+    client = TestClient(
+        create_app(
+            [_Fake(SourceName.EUROPE_PMC, (record,))],
+            http=http,
+            object_store=ObjectStore(tmp_path / "objects"),
+        )
+    )
+    key = client.get("/api/search", params={"keywords": "nutrition"}).json()["results"][0][
+        "canonical_key"
+    ]
+    response = client.get(f"/api/papers/{key}/download")
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF-")
