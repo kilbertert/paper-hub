@@ -17,6 +17,7 @@ from paperhub.models import (
     normalize_doi,
     normalize_title,
 )
+from paperhub.policy import SourcePolicyError, SourcePolicyRegistry
 from paperhub.sources import RightsStatus
 
 
@@ -25,7 +26,6 @@ def _http_with_handler(handler: httpx.MockTransport) -> HttpClient:
     return HttpClient(
         user_agent="paperhub-test",
         client=client,
-        max_retries=0,
         rate_limiter=HostRateLimiter({}),
     )
 
@@ -155,3 +155,30 @@ def test_http_client_get_json_with_mock_transport() -> None:
     http = _http_with_handler(httpx.MockTransport(handler))
     payload = http.get_json("https://example.org/search", params={"query": "nutrition"})
     assert payload == {"total": 1}
+
+
+def test_source_policy_allows_open_asset_and_blocks_bypass_url() -> None:
+    policy = SourcePolicyRegistry()
+    policy.require_download_allowed(
+        FullTextCandidate(
+            source=SourceName.ARXIV,
+            source_id="1234.5678",
+            url="https://arxiv.org/pdf/1234.5678",
+            format=FullTextFormat.PDF,
+            access=SourceAccess.APPROVED_OPEN,
+        )
+    )
+
+    blocked = FullTextCandidate(
+        source=SourceName.ARXIV,
+        source_id="blocked",
+        url="https://sci-hub.example/blocked",
+        format=FullTextFormat.PDF,
+        access=SourceAccess.APPROVED_OPEN,
+    )
+    try:
+        policy.require_download_allowed(blocked)
+    except SourcePolicyError:
+        pass
+    else:
+        raise AssertionError("paywall-bypass URLs must be rejected")

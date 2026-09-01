@@ -47,7 +47,6 @@ class HttpClient:
         *,
         user_agent: str,
         client: httpx.Client | None = None,
-        max_retries: int = 2,
         rate_limiter: HostRateLimiter | None = None,
     ) -> None:
         self.user_agent = user_agent
@@ -56,7 +55,6 @@ class HttpClient:
             timeout=30.0,
             headers={"User-Agent": user_agent},
         )
-        self.max_retries = max_retries
         self.rate_limiter = rate_limiter or HostRateLimiter()
 
     def get_json(self, url: str, *, params: dict[str, object] | None = None, headers=None):

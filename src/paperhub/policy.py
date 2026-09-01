@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .sources import FullTextCandidate, RightsStatus, SourceAccess, SourceName
+from .models import FullTextCandidate
+from .sources import RightsStatus, SourceAccess, SourceName
 
 
 class SourcePolicyError(RuntimeError):
@@ -23,7 +24,7 @@ class SourcePolicy:
 class SourcePolicyRegistry:
     """中心化策略门; 每个 connector 与下载都经过这里."""
 
-    def __init__(self, *, core_license_confirmed: bool = False) -> None:
+    def __init__(self) -> None:
         self._policies = {
             SourceName.EUROPE_PMC: SourcePolicy(
                 source=SourceName.EUROPE_PMC,
