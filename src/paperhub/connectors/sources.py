@@ -103,6 +103,7 @@ class DoajConnector(LiteratureConnector):
 
     def __init__(self, http: HttpClient) -> None:
         self.http = http
+        self.http.rate_limiter.intervals.setdefault("doaj.org", 0.5)
 
     def search(self, query: str, *, limit: int = 25, cursor: str | None = None) -> SearchPage:
         page = int(cursor or 1)
@@ -168,6 +169,7 @@ class ArxivConnector(LiteratureConnector):
 
     def __init__(self, http: HttpClient) -> None:
         self.http = http
+        self.http.rate_limiter.intervals.setdefault("export.arxiv.org", 3.0)
 
     def search(self, query: str, *, limit: int = 25, cursor: str | None = None) -> SearchPage:
         start = int(cursor or 0)
@@ -325,6 +327,7 @@ class PubmedConnector(LiteratureConnector):
         self, http: HttpClient, *, tool: str = "paper-hub", email: str | None = None
     ) -> None:
         self.http = http
+        self.http.rate_limiter.intervals.setdefault("eutils.ncbi.nlm.nih.gov", 0.34)
         self.tool = tool
         self.email = email
 

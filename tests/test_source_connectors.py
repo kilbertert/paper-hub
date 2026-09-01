@@ -235,3 +235,15 @@ def test_pubmed_connector() -> None:
 def test_connectors_have_a_concurrent_orchestration_seam() -> None:
     pages = search_connectors([StubConnector()], "nutrition")
     assert pages[SourceName.ARXIV].records == ()
+
+
+def test_official_rate_limits_are_registered() -> None:
+    http = _http(lambda _: httpx.Response(200, json={}))
+    DoajConnector(http)
+    ArxivConnector(http)
+    PubmedConnector(http)
+    assert http.rate_limiter.intervals == {
+        "doaj.org": 0.5,
+        "export.arxiv.org": 3.0,
+        "eutils.ncbi.nlm.nih.gov": 0.34,
+    }
