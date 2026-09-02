@@ -37,6 +37,9 @@ class Library:
                 );
                 CREATE TABLE IF NOT EXISTS search_cache (
                     cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS query_expansion_cache (
+                    cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL
                 );"""
             )
 
@@ -120,6 +123,24 @@ class Library:
         with self._lock, self._db:
             self._db.execute(
                 "INSERT INTO search_cache(cache_key, payload, created_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload, created_at=excluded.created_at",
+                (cache_key, json.dumps(payload), time.time()),
+            )
+
+    def get_cached_expansion(self, cache_key: str, *, ttl: float = 7 * 86400) -> dict | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT payload, created_at FROM query_expansion_cache WHERE cache_key=?",
+                (cache_key,),
+            ).fetchone()
+        if not row or time.time() - row["created_at"] >= ttl:
+            return None
+        return json.loads(row["payload"])
+
+    def put_cached_expansion(self, cache_key: str, payload: dict) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO query_expansion_cache(cache_key, payload, created_at) VALUES (?, ?, ?) "
                 "ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload, created_at=excluded.created_at",
                 (cache_key, json.dumps(payload), time.time()),
             )
