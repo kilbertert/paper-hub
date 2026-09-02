@@ -27,9 +27,17 @@ from .connectors import (
     search_connectors,
 )
 from .downloads import FullTextDownloader, ObjectStore
+from .expansion import (
+    DeepSeekQueryExpander,
+    QueryExpander,
+    QueryExpansion,
+    QueryExpansionError,
+    source_query,
+)
 from .http import HttpClient
 from .merge import MergedPaper, merge_records
 from .models import paper_record_from_dict
+from .relevance import RULES_VERSION, rank_papers
 from .sources import SourceName
 from .storage import Library
 from .unpaywall import UnpaywallClient, fallback_candidates
@@ -69,6 +77,7 @@ def create_app(
     http: HttpClient | None = None,
     object_store: ObjectStore | None = None,
     library: Library | None = None,
+    query_expander: QueryExpander | None = None,
 ) -> FastAPI:
     app = FastAPI(title="paper-hub", version="0.1.0")
     http_client = http or HttpClient(user_agent="paper-hub/0.1")
@@ -79,6 +88,7 @@ def create_app(
         Path(":memory:" if connectors is not None else "var/paperhub.sqlite")
     )
     unpaywall = UnpaywallClient(http_client, email=os.getenv("PAPERHUB_UNPAYWALL_EMAIL"))
+    query_expander = query_expander or DeepSeekQueryExpander(http_client)
 
     def get_item(canonical_key: str, session_id: str) -> MergedPaper | None:
         item = paper_index.get(canonical_key)
@@ -123,26 +133,62 @@ def create_app(
         year_to = request.year_to
         only_oa = request.only_oa
         limit = request.limit
+        if year_from is not None and year_to is not None and year_from > year_to:
+            return {"error": "year_from must be less than or equal to year_to", "results": []}
+        normalized_query = " ".join(keywords.strip().casefold().split())
+        expansion_key = json.dumps(
+            {
+                "query": normalized_query,
+                "model": query_expander.model,
+                "prompt_version": query_expander.prompt_version,
+            },
+            sort_keys=True,
+        )
+        expansion_status = "model"
+        cached_expansion = library.get_cached_expansion(expansion_key)
+        try:
+            expansion = (
+                QueryExpansion.from_dict(cached_expansion) if cached_expansion is not None else None
+            )
+        except (QueryExpansionError, TypeError):
+            expansion = None
+        if expansion is None:
+            try:
+                expansion = query_expander.expand(keywords.strip())
+                library.put_cached_expansion(expansion_key, expansion.to_dict())
+            except (QueryExpansionError, httpx.HTTPError, TimeoutError):
+                expansion = QueryExpansion.fallback(keywords.strip())
+                expansion_status = "fallback"
         cache_key = json.dumps(
             {
-                "keywords": keywords.strip(),
+                "rules_version": RULES_VERSION,
+                "keywords": normalized_query,
                 "sources": sorted(source.value for source in sources or []),
                 "year_from": year_from,
                 "year_to": year_to,
                 "only_oa": only_oa,
                 "limit": limit,
+                "expansion_status": expansion_status,
+                "expansion": expansion.to_dict(),
+                "expansion_model": query_expander.model,
+                "expansion_prompt_version": query_expander.prompt_version,
             },
             sort_keys=True,
         )
-        if year_from is not None and year_to is not None and year_from > year_to:
-            return {"error": "year_from must be less than or equal to year_to", "results": []}
         if not request.refresh:
             cached = library.get_cached_search(cache_key)
             if cached is not None:
                 library.save_payloads(session_id, cached.get("results", []))
                 return cached
         selected = tuple(c for c in configured if not sources or c.source in sources)
-        pages = search_connectors(selected, keywords.strip(), limit=limit)
+        source_queries = {
+            connector.source: source_query(connector.source, expansion) for connector in selected
+        }
+        source_limit = min(100, max(limit * 3, 50))
+        source_failures: dict[SourceName, str] = {}
+        pages = search_connectors(
+            selected, source_queries, limit=source_limit, failures=source_failures
+        )
         filtered_records = (
             record
             for page in pages.values()
@@ -157,17 +203,23 @@ def create_app(
             )
             and (not only_oa or record.is_open_access is True)
         )
-        results = merge_records(filtered_records)
-        indexed = {item.record.canonical_key: item for item in results}
+        merged = merge_records(filtered_records)
+        ranked = rank_papers(merged, expansion, original_query=keywords.strip(), limit=limit)
+        indexed = {item.item.record.canonical_key: item.item for item in ranked}
         paper_index.update(indexed)
-        library.save_papers(session_id, results)
+        library.save_payloads(session_id, (item.to_dict() for item in ranked))
         payload = {
             "query": keywords.strip(),
+            "query_intent": expansion.intent,
+            "expanded_terms": list(dict.fromkeys(expansion.phrases + expansion.include_terms)),
+            "expansion_status": expansion_status,
+            "source_errors": source_failures,
             "sources": [c.source.value for c in selected],
-            "count": len(results),
-            "results": [item.to_dict() for item in results],
+            "count": len(ranked),
+            "results": [item.to_dict() for item in ranked],
         }
-        library.put_cached_search(cache_key, payload)
+        if not source_failures:
+            library.put_cached_search(cache_key, payload)
         return payload
 
     @app.get("/api/search")

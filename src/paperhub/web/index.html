@@ -40,6 +40,7 @@
       const card = el('article'); card.append(el('h2', item.title || 'Untitled')); const badges = el('div', '', 'badges');
       badges.append(el('span', item.primary_badge || item.source, 'badge')); (item.secondary_badges || []).forEach(source => badges.append(el('span', source, 'badge'))); card.append(badges);
       const meta = el('p', `${item.publication_year || '年份未知'} · ${item.doi ? 'DOI: ' + item.doi : '暂无 DOI'}`, 'meta'); card.append(meta);
+      if (item.match_fields && item.matched_terms) card.append(el('p', `命中：${item.match_fields.join('、')} · ${item.matched_terms.join('、')}`, 'meta'));
       const actions = el('div', '', 'actions'); const detail = el('a', '查看摘要', 'button secondary'); detail.href = '/papers/' + encodeURIComponent(item.canonical_key); actions.append(detail);
       if (item.doi) { const doi = el('a', 'DOI 链接', 'button secondary'); doi.href = 'https://doi.org/' + encodeURIComponent(item.doi); doi.target = '_blank'; doi.rel = 'noopener noreferrer'; actions.append(doi); }
       const favorite = el('button', '收藏'); favorite.type = 'button'; favorite.addEventListener('click', async () => { const enabled = favorite.dataset.enabled !== 'true'; const response = await fetch('/api/papers/' + encodeURIComponent(item.canonical_key) + '/favorite', { method: enabled ? 'POST' : 'DELETE' }); if (response.ok) { favorite.dataset.enabled = String(enabled); favorite.textContent = enabled ? '取消收藏' : '收藏'; } }); actions.append(favorite);
@@ -50,7 +51,7 @@
     document.querySelector('#show-downloads').addEventListener('click', () => showLibrary('downloads', '已下载'));
     async function submitSearch(force = false) { const query = new URLSearchParams({ keywords: document.querySelector('#keywords').value.trim(), only_oa: document.querySelector('#only-oa').checked, refresh: force });
       document.querySelectorAll('input[name=source]:checked').forEach(input => query.append('sources', input.value)); const from = document.querySelector('#year-from').value, to = document.querySelector('#year-to').value; if (from) query.set('year_from', from); if (to) query.set('year_to', to);
-      status.textContent = '正在搜索…'; results.replaceChildren(); try { const response = await fetch('/api/search?' + query); if (!response.ok) throw new Error('search failed'); const payload = await response.json(); if (payload.error) throw new Error(payload.error); status.textContent = `找到 ${payload.count} 篇论文`; render(payload.results); } catch (error) { status.textContent = '搜索失败，请稍后重试。'; results.replaceChildren(el('p', error.message, 'empty')); }
+      status.textContent = '正在搜索…'; results.replaceChildren(); try { const response = await fetch('/api/search?' + query); if (!response.ok) throw new Error('search failed'); const payload = await response.json(); if (payload.error) throw new Error(payload.error); status.textContent = `找到 ${payload.count} 篇论文 · 意图：${payload.query_intent || payload.query}`; render(payload.results); } catch (error) { status.textContent = '搜索失败，请稍后重试。'; results.replaceChildren(el('p', error.message, 'empty')); }
     }
     form.addEventListener('submit', event => { event.preventDefault(); submitSearch(); }); document.querySelector('#refresh').addEventListener('click', () => submitSearch(true));
   </script>
