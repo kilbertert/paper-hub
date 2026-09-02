@@ -15,6 +15,7 @@ from paperhub.connectors import (
     search_connectors,
 )
 from paperhub.http import HostRateLimiter, HttpClient
+from paperhub.models import SearchPage
 from paperhub.sources import SourceAccess, SourceName
 
 
@@ -247,3 +248,21 @@ def test_official_rate_limits_are_registered() -> None:
         "export.arxiv.org": 3.0,
         "eutils.ncbi.nlm.nih.gov": 0.34,
     }
+
+
+def test_concurrent_orchestration_isolates_one_source_failure() -> None:
+    class Failing(StubConnector):
+        source = SourceName.DOAJ
+
+        def search(self, query: str, *, limit: int = 25, cursor: str | None = None) -> SearchPage:
+            raise httpx.HTTPStatusError(
+                "upstream unavailable",
+                request=httpx.Request("GET", "https://doaj.org"),
+                response=httpx.Response(502),
+            )
+
+    failures: dict[SourceName, str] = {}
+    pages = search_connectors([Failing(), StubConnector()], "nutrition", failures=failures)
+    assert SourceName.DOAJ not in pages
+    assert SourceName.ARXIV in pages
+    assert failures == {SourceName.DOAJ: "HTTPStatusError"}
