@@ -69,6 +69,18 @@ class HttpClient:
         self.rate_limiter.wait(url)
         return self._client.get(url, params=params, headers=headers).raise_for_status().json()
 
+    def post_json(
+        self,
+        url: str,
+        *,
+        json: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> dict:
+        """POST a JSON request and parse its JSON response."""
+        request_headers = {"User-Agent": self.user_agent, **(headers or {})}
+        self.rate_limiter.wait(url)
+        return self._client.post(url, json=json, headers=request_headers).raise_for_status().json()
+
     def get_bytes(
         self,
         url: str,

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, ClassVar
 from urllib.parse import quote
 from xml.etree import ElementTree as ET
+
+import httpx
 
 from ..http import HttpClient
 from ..models import FullTextCandidate, PaperRecord, SearchPage, normalize_title_text
@@ -440,12 +442,40 @@ class PubmedConnector(LiteratureConnector):
 
 
 def search_connectors(
-    connectors: Iterable[LiteratureConnector], query: str, *, limit: int = 25
+    connectors: Iterable[LiteratureConnector],
+    query: str | Mapping[SourceName, str],
+    *,
+    limit: int = 25,
+    failures: dict[SourceName, str] | None = None,
 ) -> dict[SourceName, SearchPage]:
     """Search independent source connectors concurrently."""
     connector_list = tuple(connectors)
     with ThreadPoolExecutor(max_workers=len(connector_list) or 1) as pool:
-        pages = pool.map(lambda connector: connector.search(query, limit=limit), connector_list)
+        futures = {
+            pool.submit(
+                connector.search,
+                query.get(connector.source, "") if isinstance(query, Mapping) else query,
+                limit=limit,
+            ): connector
+            for connector in connector_list
+        }
+        pages: dict[SourceName, SearchPage] = {}
+        for future in as_completed(futures):
+            connector = futures[future]
+            try:
+                pages[connector.source] = future.result()
+            except (
+                httpx.HTTPError,
+                ET.ParseError,
+                OSError,
+                ValueError,
+                KeyError,
+                TypeError,
+            ) as error:
+                if failures is not None:
+                    failures[connector.source] = type(error).__name__
         return {
-            connector.source: page for connector, page in zip(connector_list, pages, strict=True)
+            connector.source: pages[connector.source]
+            for connector in connector_list
+            if connector.source in pages
         }
