@@ -171,6 +171,8 @@ def test_openalex_connector() -> None:
 def test_crossref_connector() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["query.bibliographic"] == "nutrition"
+        # 首次搜索不得携带 cursor: Crossref 的 cursor 分页会破坏相关性排序.
+        assert "cursor" not in request.url.params
         return httpx.Response(
             200,
             json={
