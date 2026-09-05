@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from paperhub.connectors import LiteratureConnector
@@ -128,6 +129,14 @@ def test_homepage_contains_filters_and_security_headers() -> None:
     assert "show-favorites" in response.text
     assert "'/api/' + kind" in response.text
     assert "'/favorite'" in response.text
+    # ADR-0002: 格式徽标 + 搜索状态恢复
+    assert "formatBadge" in response.text
+    assert "全文 PDF" in response.text
+    assert "全文 XML" in response.text
+    assert "可能可下载" in response.text
+    assert "sessionStorage" in response.text
+    assert "saveState" in response.text
+    assert "restoreState" in response.text
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
     assert response.headers["x-content-type-options"] == "nosniff"
 
@@ -154,6 +163,67 @@ def test_detail_page_renders_escaped_abstract_and_doi_link_after_search() -> Non
 
 def test_detail_page_returns_404_for_unknown_key() -> None:
     assert TestClient(create_app([])).get("/papers/doi%3Amissing").status_code == 404
+
+
+def test_download_prefers_unpaywall_pdf_over_native_xml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0002: Europe PMC XML + Unpaywall 合法 PDF → 下载得到 PDF 而非 XML."""
+    monkeypatch.setenv("PAPERHUB_UNPAYWALL_EMAIL", "reader@example.org")
+    """ADR-0002: Europe PMC XML + Unpaywall 合法 PDF → 下载得到 PDF 而非 XML."""
+    native_xml = FullTextCandidate(
+        source=SourceName.EUROPE_PMC,
+        source_id="PMC1",
+        url="https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1/fullTextXML",
+        format=FullTextFormat.JATS_XML,
+        access=SourceAccess.APPROVED_OPEN,
+        media_type="application/xml",
+    )
+    record = PaperRecord(
+        source=SourceName.EUROPE_PMC,
+        source_id="PMC1",
+        title="OA paper with both formats",
+        doi="10.1/xml-and-pdf",
+        full_text_candidates=(native_xml,),
+        keywords=("nutrition",),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "unpaywall.org" in url:
+            return httpx.Response(
+                200,
+                json={
+                    "is_oa": True,
+                    "best_oa_location": {"url_for_pdf": "https://repo.example/paper.pdf"},
+                },
+            )
+        if url.endswith(".pdf"):
+            return httpx.Response(
+                200, content=b"%PDF-1.7\nbody", headers={"content-type": "application/pdf"}
+            )
+        return httpx.Response(200, content=b"<article>xml</article>")
+
+    http = HttpClient(
+        user_agent="test",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        rate_limiter=HostRateLimiter({}),
+    )
+    client = TestClient(
+        create_app(
+            [_Fake(SourceName.EUROPE_PMC, (record,))],
+            http=http,
+            object_store=ObjectStore(tmp_path / "objects"),
+            library=Library(tmp_path / "library.sqlite"),
+        )
+    )
+    key = client.get("/api/search", params={"keywords": "nutrition"}).json()["results"][0][
+        "canonical_key"
+    ]
+    response = client.get(f"/api/papers/{key}/download")
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF-")
+    assert response.headers["content-type"] == "application/pdf"
 
 
 def test_download_endpoint_delivers_approved_asset(tmp_path: Path) -> None:
