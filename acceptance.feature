@@ -26,6 +26,14 @@ Feature: 合规开放论文搜索与下载
       Then 页面显示元数据和合法来源链接
       And 服务不提供支付墙绕过或 sci-hub 下载
 
+    Scenario: 浏览器下载不可用时显示友好提示
+      Given 论文没有可下载的开放全文资产
+      And 用户从浏览器点击下载链接 (Accept: text/html)
+      When 下载请求返回失败
+      Then 浏览器显示包含中文原因的提示页
+      And 提示页提供返回搜索入口
+      And API 调用方 (Accept: application/json) 仍收到原 JSON 契约
+
   Rule: 本地单用户数据可持续使用
 
     Scenario: 收藏和查看已下载清单

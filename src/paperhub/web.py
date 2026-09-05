@@ -71,6 +71,24 @@ class SearchRequest(BaseModel):
         return value
 
 
+def _download_failure(request: Request, status_code: int, status: str, message: str):
+    """下载失败时按 Accept 内容协商: 浏览器导航得到友好 HTML, API 调用得到 JSON."""
+    accept = request.headers.get("accept", "")
+    if "text/html" not in accept:
+        return JSONResponse({"status": status, "detail": message}, status_code=status_code)
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>下载不可用 · paper-hub</title>
+<style>body{{font:16px/1.6 system-ui,sans-serif;max-width:600px;margin:auto;padding:2rem;background:#f5f7fb;color:#172033}}main{{background:#fff;padding:1.5rem;border-radius:12px}}.warn{{border-left:4px solid #d97706;padding:.6rem 1rem;background:#fffbeb}}</style></head>
+<body><main><h1>无法下载</h1>
+<p class="warn">{message}</p>
+<p><a href="/">← 返回搜索</a></p>
+</main></body></html>""",
+        status_code=status_code,
+    )
+
+
 def create_app(
     connectors: Iterable[LiteratureConnector] | None = None,
     *,
@@ -280,12 +298,10 @@ def create_app(
     def download(canonical_key: str, request: Request):
         item = get_item(canonical_key, request.state.session_id)
         if item is None:
-            return JSONResponse({"status": "not_found"}, status_code=404)
+            return _download_failure(request, 404, "not_found", "论文不存在或会话已过期。")
         candidates = fallback_candidates(item.record, unpaywall)
         if not candidates:
-            return JSONResponse(
-                {"status": "metadata_only", "detail": "No open full-text asset"}, status_code=404
-            )
+            return _download_failure(request, 404, "metadata_only", "暂无开放全文，仅提供元数据。")
         last_error: Exception | None = None
         for candidate in candidates:
             try:
@@ -296,9 +312,7 @@ def create_app(
                 )
             except (ValueError, RuntimeError, httpx.HTTPError) as error:
                 last_error = error
-        return JSONResponse(
-            {"status": "not_downloadable", "detail": str(last_error)}, status_code=403
-        )
+        return _download_failure(request, 403, "not_downloadable", f"下载失败：{last_error}")
 
     @app.post("/api/papers/{canonical_key:path}/favorite")
     def favorite(canonical_key: str, request: Request) -> dict[str, object]:

@@ -201,6 +201,73 @@ def test_download_endpoint_delivers_approved_asset(tmp_path: Path) -> None:
     assert client.get("/api/downloads").json()["results"][0]["canonical_key"] == key
 
 
+def test_download_without_asset_shows_friendly_html_for_browser(tmp_path: Path) -> None:
+    record = PaperRecord(
+        source=SourceName.CROSSREF,
+        source_id="x",
+        title="Metadata only paper",
+        doi="10.1/metadata-only",
+        keywords=("nutrition",),
+    )
+    http = HttpClient(
+        user_agent="test",
+        client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={}))),
+        rate_limiter=HostRateLimiter({}),
+    )
+    client = TestClient(
+        create_app(
+            [_Fake(SourceName.CROSSREF, (record,))],
+            http=http,
+            object_store=ObjectStore(tmp_path / "objects"),
+            library=Library(tmp_path / "library.sqlite"),
+        )
+    )
+    key = client.get("/api/search", params={"keywords": "nutrition"}).json()["results"][0][
+        "canonical_key"
+    ]
+    # 浏览器导航 (Accept: text/html) → 友好 HTML, 不是裸 JSON
+    response = client.get(
+        f"/api/papers/{key}/download", headers={"accept": "text/html,application/xhtml+xml"}
+    )
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("text/html")
+    assert "暂无开放全文" in response.text
+    assert "返回搜索" in response.text
+
+
+def test_download_without_asset_keeps_json_for_api_callers(tmp_path: Path) -> None:
+    record = PaperRecord(
+        source=SourceName.CROSSREF,
+        source_id="x",
+        title="Metadata only paper",
+        doi="10.1/metadata-only",
+        keywords=("nutrition",),
+    )
+    http = HttpClient(
+        user_agent="test",
+        client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json={}))),
+        rate_limiter=HostRateLimiter({}),
+    )
+    client = TestClient(
+        create_app(
+            [_Fake(SourceName.CROSSREF, (record,))],
+            http=http,
+            object_store=ObjectStore(tmp_path / "objects"),
+            library=Library(tmp_path / "library.sqlite"),
+        )
+    )
+    key = client.get("/api/search", params={"keywords": "nutrition"}).json()["results"][0][
+        "canonical_key"
+    ]
+    # API 调用 (Accept: application/json) → 仍是 JSON 契约
+    response = client.get(f"/api/papers/{key}/download", headers={"accept": "application/json"})
+    assert response.status_code == 404
+    assert response.json() == {
+        "status": "metadata_only",
+        "detail": "暂无开放全文，仅提供元数据。",
+    }
+
+
 def test_favorite_and_download_lists_are_session_scoped(tmp_path: Path) -> None:
     record = PaperRecord(
         source=SourceName.CROSSREF,
