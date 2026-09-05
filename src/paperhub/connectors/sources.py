@@ -285,11 +285,14 @@ class CrossrefConnector(LiteratureConnector):
         self.mailto = mailto
 
     def search(self, query: str, *, limit: int = 25, cursor: str | None = None) -> SearchPage:
+        # Crossref 的 cursor 深分页模式会改变相关性排序 (实测: 同一 query.bibliographic
+        # 带 cursor=* 时标题精确匹配的论文被挤出前 75, 不带时排第 1). 首次搜索不发 cursor.
         params: dict[str, object] = {
             "query.bibliographic": query,
             "rows": limit,
-            "cursor": cursor or "*",
         }
+        if cursor:
+            params["cursor"] = cursor
         if self.mailto:
             params["mailto"] = self.mailto
         message = self.http.get_json(self.url, params=params).get("message", {})
