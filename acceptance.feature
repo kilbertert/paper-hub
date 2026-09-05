@@ -20,6 +20,26 @@ Feature: 合规开放论文搜索与下载
       When 用户请求下载
       Then 服务校验内容类型和文件魔数后返回全文
 
+    Scenario: 同一论文存在多个合法格式时 PDF 优先
+      Given 论文的来源原生候选仅有 XML 全文
+      And Unpaywall 为其 DOI 提供合法开放 PDF
+      When 用户请求下载
+      Then 服务返回 PDF 而非 XML
+      And 服务仅当原生候选已有 PDF 时跳过 Unpaywall 查询
+
+    Scenario: 原生 XML 无 PDF 可替代时下载 XML
+      Given 论文的来源原生候选仅有 XML 全文
+      And Unpaywall 未提供该论文的开放 PDF
+      When 用户请求下载
+      Then 服务返回校验后的 XML 全文
+
+    Scenario: 结果卡片显示格式徽标
+      Given 搜索结果包含带有原生全文候选的论文
+      When 用户查看结果卡片
+      Then 卡片显示具体格式徽标（全文 PDF 或全文 XML）
+      And 无原生候选的论文显示中性提示（可能可下载）
+      And 搜索时不为徽标逐篇调用 Unpaywall
+
     Scenario: 没有开放全文时显示外链
       Given 论文没有可下载的开放全文资产
       When 用户查看论文详情
@@ -33,6 +53,19 @@ Feature: 合规开放论文搜索与下载
       Then 浏览器显示包含中文原因的提示页
       And 提示页提供返回搜索入口
       And API 调用方 (Accept: application/json) 仍收到原 JSON 契约
+
+  Rule: 搜索状态在会话内可恢复
+
+    Scenario: 返回搜索页恢复离开前状态
+      Given 用户完成一次搜索并看到结果列表
+      When 用户离开搜索页再返回
+      Then 关键词、来源勾选、年份范围、仅开放获取勾选和结果列表恢复如离开时
+      And 收藏/已下载视图不自动恢复
+
+    Scenario: 状态存储不可用时静默降级
+      Given 浏览器禁用 sessionStorage 或存储损坏
+      When 用户重新打开搜索页
+      Then 页面按无历史状态加载且不报错
 
   Rule: 本地单用户数据可持续使用
 
